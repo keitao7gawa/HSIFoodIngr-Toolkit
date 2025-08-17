@@ -1,0 +1,51 @@
+---
+alwaysApply: false
+---
+
+## Implementation Plan: HDF5 Validator CLI
+
+### 目的
+- `HSIFoodIngr-Compression` の出力 HDF5 を対象に、構造・型・shape・値域・整合性を機械的に検証し、破損や不整合を早期検知する。
+
+### スコープ/成果物
+- `hsifoodingr/tools/check_h5.py` を実装。
+- 人可読と JSON の 2 形式出力。終了コードで状態を表現。
+
+### CLI 仕様
+- コマンド例:
+  - `python -m hsifoodingr.tools.check_h5 path/to.h5 [--strict] [--json report.json] [--samples 8]`
+- 終了コード:
+  - 0: OK（エラーなし）
+  - 1: 警告あり（軽微な不整合や閾値超え）
+  - 2: エラー（必須欠損、型/shape 不一致、破損）
+
+### 検証観点
+- 必須キーの存在: `/hsi`, `/rgb`, `/masks`, `/metadata/*`
+- 形状/型: `hsi (N,H,W,B) float32`, `rgb (N,H,W,3) uint8`, `masks (N,H,W) int`
+- 値域: `rgb ∈ [0,255]`、`masks ≥ 0`、`hsi` の NaN/Inf 無し
+- 整合性:
+  - `wavelengths` 長さと `B` の一致
+  - `image_basenames` 長さ = `N`
+  - `mask` の最大ラベル ≤ `ingredient_map` のクラス数
+- 参照/メタデータ:
+  - `ingredient_map` は JSON として parse 可能であること
+  - 必須属性（あれば）
+
+### 実装詳細
+- `h5py` で読み取り。巨大データはランダム `--samples` 件でスポットチェック。
+- 値域チェックは `rgbs.min()/max()`, `masks.min()/max()` を適切にサンプリング。
+- 出力:
+  - 人可読: 表形式/箇条書き
+  - JSON: 検証項目ごとの `status`, `details`, `stats`
+
+### ロギング/プロファイル
+- `logging` で検証時間、I/O 例外、各項目の統計値を出力。
+
+### テスト計画
+- 単体: 欠損キー、型/shape 不一致、JSON 不正での失敗を網羅。
+- 統合: ダミー HDF5 を生成し、OK/警告/エラーの 3 ケースをカバー。
+
+### 受け入れ基準（DoD）
+- 正常ファイルで終了コード 0、壊れたファイルで 2 を返す。
+- JSON レポートがスキーマ整合（キー/型）で出力される。
+- テストが全て合格。
