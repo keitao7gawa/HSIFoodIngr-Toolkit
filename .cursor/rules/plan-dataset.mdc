@@ -1,0 +1,92 @@
+---
+alwaysApply: false
+---
+
+## Implementation Plan: Dataset (`HSIFoodIngrDataset`)
+
+### 目的
+- `HSIFoodIngr-Compression` が生成する HDF5（例: `HSIFoodIngr-64.h5`）を PyTorch 学習で安全・効率的に読み出す。
+- チャネル順変換、正規化、メタデータ参照を一貫した I/F で提供。
+
+### スコープ/成果物
+- `hsifoodingr/datasets/hsi_food_ingr.py` に `HSIFoodIngrDataset` を実装。
+- ユーザー向け最小コード例と API ドキュメント文字列。
+- 単体/統合テスト（`tests/test_hsi_food_ingr.py`）。
+
+### API 仕様
+- クラス: `class HSIFoodIngrDataset(torch.utils.data.Dataset)`
+- `__init__(
+    h5_path: str,
+    normalize: Literal["none","minmax","standard","wavelength"] = "none",
+    return_uint8_rgb: bool = false,
+    transform: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    cache_metadata: bool = True,
+    strict: bool = True,
+) -> None`
+- `__len__() -> int`: サンプル数 N
+- `__getitem__(index: int) -> Dict[str, Any]`:
+  - 返却: `{ "hsi": Tensor, "rgb": Tensor, "mask": Tensor, "meta": Dict[str, Any] }`
+  - 形状/型:
+    - `hsi`: `(B, H, W)` の `torch.float32`
+    - `rgb`: `(3, H, W)` の `torch.float32`（`return_uint8_rgb=True` の場合は `torch.uint8`）
+    - `mask`: `(H, W)` の `torch.int64`
+  - `meta`: `{"basename": str, "dish_label": Optional[str]}` など（必要最小限 + グローバルメタへの参照）
+
+### 入出力/データ変換
+- 入力 HDF5 の想定キー:
+  - `/hsi: float32 (N,H,W,B)`, `/rgb: uint8 (N,H,W,3)`, `/masks: int (N,H,W)`
+  - `/metadata/{image_basenames, dish_labels, ingredient_map(JSON str), wavelengths}`
+- 変換:
+  - HSI: `(H,W,B)` → `(B,H,W)`、`np.float32` → `torch.float32`
+  - RGB: `(H,W,3)` → `(3,H,W)`、`uint8` → `float32` で `0-1` 正規化（オプション）
+  - Mask: 整数化（`int64`）、負値禁止
+- 正規化:
+  - `none`: 変換のみ
+  - `minmax`: サンプル×バンド毎に `(x - min) / (max - min + eps)`
+  - `standard`: サンプル×バンド毎に `(x - mean) / (std + eps)`
+  - `wavelength`: 波長配列を用いた前処理のフック（暫定: `none` と同等、拡張ポイント）
+
+### ファイル I/O と並列実行
+- `h5py.File(h5_path, "r")` を使用。SWMR 読み取りが可能なら有効化を検討。
+- DataLoader 並列化対応:
+  - プロセス間で `h5py.File` を共有しない。
+  - `__getstate__/__setstate__` または遅延オープンで、ワーカー毎に独立ファイルハンドルを確保。
+- 読み出しは必要スライスのみに限定し、不要コピーを避ける。
+
+### バリデーション/エラー処理
+- 初期化時に必須キー/shape/dtype を軽量チェック。`strict=True` で厳密化。
+- `__getitem__` で範囲外 index、欠損、NaN/Inf を検出したら例外送出（サンプルID込みの詳細メッセージ）。
+
+### ロギング
+- `logging` を使用。初期化時に概要、各種警告、I/O 例外を記録。
+
+### 使用例
+```python
+from hsifoodingr.datasets.hsi_food_ingr import HSIFoodIngrDataset
+from torch.utils.data import DataLoader
+
+ds = HSIFoodIngrDataset(
+    "HSIFoodIngr-64.h5",
+    normalize="minmax",
+    return_uint8_rgb=False,
+)
+loader = DataLoader(ds, batch_size=2, num_workers=2, shuffle=False)
+for sample in loader:
+    hsi, rgb, mask = sample["hsi"], sample["rgb"], sample["mask"]
+    break
+```
+
+### テスト計画
+- 単体
+  - 形状/型/正規化結果
+  - チャネル順変換の正当性（HSI/RGB）
+  - 範囲外 index、欠損キー、dtype/shape 不一致での例外
+- 統合
+  - 小規模ダミー HDF5 を生成し、`num_workers in {0,2,4}` で読み出し
+- 性能
+  - 代表サンプルの I/O レイテンシ測定、メモリ使用量の上限確認
+
+### 受け入れ基準（DoD）
+- DataLoader で安定反復し、返却 dict の形状/型が仕様通り
+- 欠損・不整合で適切に例外送出
+- 単体/統合テストが全て合格

@@ -1,0 +1,48 @@
+---
+alwaysApply: false
+---
+
+## Implementation Plan: Visualizer GUI
+
+### 目的
+- HDF5 に格納された RGB/HSI/Mask を整合した位置合わせで表示し、データ品質の目視確認や解析の前段を支援する。
+
+### スコープ/成果物
+- `hsifoodingr/tools/view_hsi.py`（Streamlit 版）
+- 必要に応じて Gradio 版を追加可能
+
+### 起動/引数
+- Streamlit: `streamlit run hsifoodingr/tools/view_hsi.py -- --h5 path/to.h5`
+- 引数例: `--sample 0 --pseudo rgb|band|pseudocolor --band 100 --save-dir out/`
+
+### UI/機能仕様
+- ファイル選択（パス入力/ファイルピッカー）
+- サンプル選択スライダー（0..N-1）
+- 表示:
+  - RGB 画像（`(H,W,3)`）
+  - HSI: バンド単体表示（`(H,W)`）、擬似カラー（3 波長合成）
+  - Mask: `ingredient_map` による色割り当て（凡例表示）
+- インタラクション:
+  - クリック座標の分光プロファイル（`hsi[:, y, x]` を波長軸にプロット）
+  - オーバーレイ透過率スライダー（Mask ↔ RGB/HSI）
+- 画像保存/レポート（任意）
+
+### 実装詳細
+- データ読み出しは Dataset 実装を再利用（単独読み出しユーティリティでも可）
+- 擬似カラー:
+  - 指定波長近傍のバンドを R/G/B に割当（波長 → バンド index 対応）
+  - `wavelengths` が無い場合はバンド index 直接指定
+- 色割り当て:
+  - `ingredient_map` の id→name/color を使用。無指定時はカラーマップ生成
+
+### 性能/安定性
+- ステートフルに HDF5 を開きっぱなしにせず、必要時に最小断面を読み込む
+- 大きな画像は表示前にダウンサンプル（オプション）
+
+### テスト計画
+- ダミー HDF5 で GUI の基本操作（読み込み/切替/プロファイル）をスモークテスト
+
+### 受け入れ基準（DoD）
+- RGB/HSI/Mask の位置合わせ表示が崩れない
+- クリック位置の分光プロファイルが波長と一致して更新される
+- 主要操作がエラーなく完了する
