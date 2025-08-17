@@ -97,6 +97,112 @@ def _pseudocolor_from_wavelengths(
     return rgb
 
 
+def _parse_color(value: Any, default_seed: int) -> Tuple[int, int, int, str]:
+    # Accept '#RGB' or '#RRGGBB' or [r,g,b] or {'r':..,'g':..,'b':..}
+    if isinstance(value, str) and value.startswith("#") and len(value) in (4, 7):
+        if len(value) == 4:
+            r = int(value[1] * 2, 16)
+            g = int(value[2] * 2, 16)
+            b = int(value[3] * 2, 16)
+        else:
+            r = int(value[1:3], 16)
+            g = int(value[3:5], 16)
+            b = int(value[5:7], 16)
+        return r, g, b, value
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        r, g, b = [int(max(0, min(255, int(v)))) for v in value[:3]]
+        return r, g, b, f"#{r:02x}{g:02x}{b:02x}"
+    if isinstance(value, dict):
+        if all(k in value for k in ("r", "g", "b")):
+            r, g, b = [int(max(0, min(255, int(value[k])))) for k in ("r", "g", "b")]
+            return r, g, b, f"#{r:02x}{g:02x}{b:02x}"
+        if "hex" in value and isinstance(value["hex"], str):
+            return _parse_color(value["hex"], default_seed)
+    # fallback deterministic color
+    rng = np.random.default_rng(default_seed)
+    r, g, b = [int(x) for x in (rng.integers(64, 255), rng.integers(64, 255), rng.integers(64, 255))]
+    return r, g, b, f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _extract_id_name_color_map(ingredient_map: Optional[Dict[str, Any]]) -> Dict[int, Tuple[str, Optional[Any]]]:
+    """Return mapping: id -> (name, color_raw_or_None) from various schemas.
+
+    Accepts schemas like:
+      - {"classes": [{"id": 1, "name": "Rice", "color": "#aabbcc"}, ...]}
+      - {"0": {"name": "Rice", "color": [255,128,0]}, ...}
+      - {"id_to_name": {"0": "Rice", ...}, "id_to_color": {"0": "#..."}}
+      - {"0": "Rice", "1": "..."}
+    """
+    mapping: Dict[int, Tuple[str, Optional[Any]]] = {}
+    if not isinstance(ingredient_map, dict):
+        return mapping
+
+    # Case 0: name -> id mapping (e.g., {"background":0, "Rice":1, ...})
+    try:
+        if len(ingredient_map) > 0 and all(isinstance(v, (int, np.integer, str)) for v in ingredient_map.values()):
+            inverted: Dict[int, Tuple[str, Optional[Any]]] = {}
+            for name, cid in ingredient_map.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                inverted[cid_int] = (str(name), None)
+            if len(inverted) > 0:
+                mapping.update(inverted)
+                return mapping
+    except Exception:
+        pass
+
+    # Case 1: explicit classes list
+    classes = ingredient_map.get("classes") if isinstance(ingredient_map, dict) else None
+    if isinstance(classes, list):
+        for c in classes:
+            try:
+                cid = int(c.get("id", c.get("index", c.get("class_id"))))
+                # prefer common name keys
+                name = (
+                    c.get("name")
+                    or c.get("label")
+                    or c.get("ja")
+                    or c.get("en")
+                    or str(cid)
+                )
+                color = c.get("color", c.get("hex", c.get("rgb")))
+                mapping[cid] = (str(name), color)
+            except Exception:
+                continue
+
+    # Case 2: id_to_* dicts
+    id_to_name = ingredient_map.get("id_to_name") if isinstance(ingredient_map, dict) else None
+    id_to_color = ingredient_map.get("id_to_color") if isinstance(ingredient_map, dict) else None
+    if isinstance(id_to_name, dict):
+        for k, v in id_to_name.items():
+            try:
+                cid = int(k)
+                color = id_to_color.get(k) if isinstance(id_to_color, dict) else None
+                mapping.setdefault(cid, (str(v), color))
+            except Exception:
+                continue
+
+    # Case 3: flat dict keyed by id
+    for k, v in ingredient_map.items():
+        try:
+            cid = int(k)
+        except Exception:
+            continue
+        if cid in mapping:
+            continue
+        if isinstance(v, dict):
+            name = v.get("name") or v.get("label") or v.get("ja") or v.get("en") or str(cid)
+            color = v.get("color", v.get("hex", v.get("rgb")))
+        else:
+            name = str(v)
+            color = None
+        mapping[cid] = (str(name), color)
+
+    return mapping
+
+
 def _mask_to_color(mask_hw: np.ndarray, ingredient_map: Optional[Dict[str, Any]]) -> Tuple[np.ndarray, Dict[int, Tuple[int, int, int, str, str]]]:
     # Returns (rgba uint8 image HxWx4, legend)
     h, w = mask_hw.shape
@@ -104,52 +210,21 @@ def _mask_to_color(mask_hw: np.ndarray, ingredient_map: Optional[Dict[str, Any]]
 
     id_to_info: Dict[int, Tuple[int, int, int, str, str]] = {}
 
-    # Build color map
-    if ingredient_map and isinstance(ingredient_map, dict):
-        # Accept either {id: {name, color}} or {'classes': [{id,name,color}, ...]}
-        classes = []
-        if "classes" in ingredient_map and isinstance(ingredient_map["classes"], list):
-            classes = ingredient_map["classes"]
-        else:
-            for k, v in ingredient_map.items():
-                try:
-                    _id = int(k)
-                    _name = v.get("name", str(k)) if isinstance(v, dict) else str(k)
-                    _color = v.get("color", None) if isinstance(v, dict) else None
-                    classes.append({"id": _id, "name": _name, "color": _color})
-                except Exception:
-                    continue
-        for c in classes:
-            try:
-                _id = int(c.get("id"))
-                name = str(c.get("name", _id))
-                col = c.get("color", None)
-                if isinstance(col, str) and col.startswith("#") and len(col) in (4, 7):
-                    if len(col) == 4:  # #RGB
-                        r = int(col[1] * 2, 16)
-                        g = int(col[2] * 2, 16)
-                        b = int(col[3] * 2, 16)
-                    else:
-                        r = int(col[1:3], 16)
-                        g = int(col[3:5], 16)
-                        b = int(col[5:7], 16)
-                else:
-                    # fallback color
-                    rng = np.random.default_rng(_id)
-                    r, g, b = [int(x) for x in (rng.integers(64, 255), rng.integers(64, 255), rng.integers(64, 255))]
-                    col = f"#{r:02x}{g:02x}{b:02x}"
-                id_to_info[_id] = (r, g, b, name, col)
-            except Exception:
-                continue
+    # Build color and name map from metadata (preferred)
+    meta_map = _extract_id_name_color_map(ingredient_map)
+    for cid, (name, color_raw) in meta_map.items():
+        r, g, b, hexcol = _parse_color(color_raw, default_seed=cid)
+        id_to_info[int(cid)] = (r, g, b, name, hexcol)
 
-    # Default colormap for unseen ids
+    # Default colormap for unseen ids or missing color
     def color_for_id(cid: int) -> Tuple[int, int, int, str, str]:
         if cid in id_to_info:
-            return id_to_info[cid]
-        rng = np.random.default_rng(cid)
-        r, g, b = [int(x) for x in (rng.integers(64, 255), rng.integers(64, 255), rng.integers(64, 255))]
-        hexcol = f"#{r:02x}{g:02x}{b:02x}"
-        info = (r, g, b, str(cid), hexcol)
+            r, g, b, name, hexcol = id_to_info[cid]
+            return r, g, b, name, hexcol
+        # If name is known but color not set, use deterministic fallback
+        name = meta_map.get(cid, (str(cid), None))[0]
+        r, g, b, hexcol = _parse_color(None, default_seed=cid)
+        info = (r, g, b, name, hexcol)
         id_to_info[cid] = info
         return info
 
@@ -288,13 +363,29 @@ def main(argv: Optional[List[str]] = None) -> None:  # pragma: no cover
 
         # Legend
         st.subheader("Legend")
-        if ingredient_map:
-            # Render simple table
+        if ingredient_map is not None:
             _, legend_map = _mask_to_color(mask, ingredient_map)
-            table = []
-            for cid, (r, g, b, name, hexcol) in sorted(legend_map.items()):
-                table.append({"id": cid, "name": name, "color": hexcol})
-            st.dataframe(table, use_container_width=True)
+            present_ids = np.unique(mask)
+            # Build HTML table with color squares
+            rows_html = []
+            for cid in sorted(int(c) for c in present_ids.tolist()):
+                info = legend_map.get(cid)
+                if info is None:
+                    continue
+                r, g, b, name, hexcol = info
+                swatch = f'<span style="display:inline-block;width:0.9em;height:0.9em;background-color:{hexcol};border:1px solid #999;vertical-align:middle;margin-right:0.4em;"></span>'
+                color_cell = f"{swatch}{hexcol}"
+                rows_html.append(f"<tr><td style='padding:4px 8px;'>{cid}</td><td style='padding:4px 8px;'>{name}</td><td style='padding:4px 8px;'>{color_cell}</td></tr>")
+            html = (
+                "<table style='border-collapse:collapse;'>"
+                "<thead><tr><th style='text-align:left;padding:4px 8px;'>id</th><th style='text-align:left;padding:4px 8px;'>name</th><th style='text-align:left;padding:4px 8px;'>color</th></tr></thead>"
+                f"<tbody>{''.join(rows_html)}</tbody>"
+                "</table>"
+            )
+            if rows_html:
+                st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.write("No labels present in this mask.")
         else:
             st.write("No ingredient_map available.")
 
