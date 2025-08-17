@@ -21,3 +21,5 @@ dependencies:
   - mypy
   - ruff
   - ipykernel
+  - pip:
+      - -e .
