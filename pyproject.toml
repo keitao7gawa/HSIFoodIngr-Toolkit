@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hsifoodingr"
+version = "0.1.0"
+description = "Toolkit for HSIFoodIngr HDF5: PyTorch dataset, validator CLI, and visualizer GUI"
+requires-python = ">=3.9"
+authors = [{ name = "Your Name" }]
+readme = "README.md"
+keywords = ["hyperspectral", "HDF5", "pytorch", "dataset", "streamlit"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy",
+  "h5py",
+  "pillow",
+  "torch",
+  "streamlit",
+  "altair",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hsifoodingr*"]
