@@ -7,6 +7,7 @@ alwaysApply: false
 ### 目的
 - `HSIFoodIngr-Compression` が生成する HDF5（例: `HSIFoodIngr-64.h5`）を PyTorch 学習で安全・効率的に読み出す。
 - チャネル順変換、正規化、メタデータ参照を一貫した I/F で提供。
+- 作成した .pyファイルの内容をコピーするだけで他のプロジェクトでも pytorch custom Datasetとして読み込めるようにする．
 
 ### スコープ/成果物
 - `hsifoodingr/datasets/hsi_food_ingr.py` に `HSIFoodIngrDataset` を実装。
