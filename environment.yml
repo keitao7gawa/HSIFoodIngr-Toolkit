@@ -1,0 +1,23 @@
+name: hsifoodingr-toolkit
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  # Core
+  - pytorch>=2.3
+  - h5py
+  - numpy
+  - pillow
+  # Visualization
+  - matplotlib
+  - altair
+  - streamlit
+  - gradio
+  # Dev/Test
+  - pytest
+  - mypy
+  - ruff
+  - ipykernel
