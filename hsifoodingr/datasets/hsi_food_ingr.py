@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Any, Callable, Dict, Literal, Optional, Sequence
 
 import h5py
 import numpy as np
@@ -44,6 +44,8 @@ class HSIFoodIngrDataset(Dataset):
         transform: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         cache_metadata: bool = True,
         strict: bool = True,
+        band_indices: Optional[Sequence[int]] = None,
+        wavelengths_nm: Optional[Sequence[float]] = None,
     ) -> None:
         super().__init__()
         self.h5_path = h5_path
@@ -52,12 +54,18 @@ class HSIFoodIngrDataset(Dataset):
         self.transform = transform
         self.cache_metadata = cache_metadata
         self.strict = strict
+        # Band selection
+        self._selected_order: Optional[np.ndarray] = None  # original order, may contain duplicates
+        self._selected_unique_sorted: Optional[np.ndarray] = None  # unique ascending for efficient read
+        self._selected_reorder_idx: Optional[np.ndarray] = None  # map unique->original order indices
 
         self._file: Optional[h5py.File] = None  # opened lazily per process/worker
         self._metadata_cache = _MetadataCache()
 
         # Light validation without reading the whole file
         self._validate_structure_light()
+        # Compute band selection indices if requested
+        self._init_band_selection(band_indices=band_indices, wavelengths_nm=wavelengths_nm)
         logging.getLogger(__name__).info(
             "Initialized HSIFoodIngrDataset: path=%s normalize=%s uint8_rgb=%s",
             h5_path,
@@ -132,6 +140,56 @@ class HSIFoodIngrDataset(Dataset):
                 if "wavelengths" in md:
                     self._metadata_cache.wavelengths = np.asarray(md["wavelengths"], dtype=np.float32)
 
+    # --- band selection helpers ---
+    def _init_band_selection(
+        self,
+        band_indices: Optional[Sequence[int]],
+        wavelengths_nm: Optional[Sequence[float]],
+    ) -> None:
+        if (band_indices is None or len(band_indices) == 0) and (
+            wavelengths_nm is None or len(wavelengths_nm) == 0
+        ):
+            # No selection → use all bands
+            self._selected_order = None
+            self._selected_unique_sorted = None
+            self._selected_reorder_idx = None
+            return
+
+        # Prefer explicit band indices
+        if band_indices is not None and len(band_indices) > 0:
+            order = np.asarray(list(band_indices), dtype=int)
+        else:
+            # Map wavelengths to nearest band indices
+            if self._metadata_cache.wavelengths is None:
+                if self.strict:
+                    raise ValueError("/metadata/wavelengths not available to resolve wavelengths_nm")
+                # Fallback: disable selection
+                self._selected_order = None
+                self._selected_unique_sorted = None
+                self._selected_reorder_idx = None
+                return
+            wl = self._metadata_cache.wavelengths.astype(np.float32)
+            targets = np.asarray(list(wavelengths_nm or []), dtype=np.float32)
+            order = np.asarray([int(np.argmin(np.abs(wl - t))) for t in targets], dtype=int)
+
+        # Validate range
+        with h5py.File(self.h5_path, "r") as f:
+            B = int(f["/hsi"].shape[-1])
+        if order.size == 0:
+            raise ValueError("Selected band list is empty")
+        if np.any(order < 0) or np.any(order >= B):
+            raise ValueError(f"Selected band index out of range [0,{B-1}]: {order}")
+
+        # Build unique sorted and reorder indices
+        unique_sorted = np.unique(order)
+        # Map band value -> position in unique_sorted
+        pos = {int(v): i for i, v in enumerate(unique_sorted.tolist())}
+        reorder_idx = np.asarray([pos[int(v)] for v in order.tolist()], dtype=int)
+
+        self._selected_order = order  # original possibly with duplicates
+        self._selected_unique_sorted = unique_sorted
+        self._selected_reorder_idx = reorder_idx
+
     # --- core dataset protocol ---
     def __len__(self) -> int:  # type: ignore[override]
         return self._num_samples
@@ -143,7 +201,26 @@ class HSIFoodIngrDataset(Dataset):
         f = self._ensure_file()
 
         # Read arrays lazily for this index
-        hsi_np = np.asarray(f["/hsi"][index], dtype=np.float32)  # (H,W,B)
+        # HSI: optionally select bands at read time for efficiency
+        if self._selected_unique_sorted is not None:
+            try:
+                # h5py fancy indexing along last axis
+                hsi_np = np.asarray(
+                    f["/hsi"][index, :, :, self._selected_unique_sorted], dtype=np.float32
+                )  # (H,W,B_sel_unique)
+                # Reorder and duplicate channels to match original requested order
+                if self._selected_reorder_idx is not None and (
+                    self._selected_reorder_idx.size != self._selected_unique_sorted.size or not np.all(
+                        self._selected_reorder_idx == np.arange(self._selected_reorder_idx.size)
+                    )
+                ):
+                    hsi_np = hsi_np[..., self._selected_reorder_idx]
+            except Exception:
+                # Fallback: read full and slice with numpy
+                full_np = np.asarray(f["/hsi"][index], dtype=np.float32)
+                hsi_np = full_np[..., self._selected_order]
+        else:
+            hsi_np = np.asarray(f["/hsi"][index], dtype=np.float32)  # (H,W,B)
         rgb_np = np.asarray(f["/rgb"][index])  # uint8 (H,W,3)
         mask_np = np.asarray(f["/masks"][index])  # int (H,W)
 
