@@ -243,6 +243,59 @@ def _mask_to_color(mask_hw: np.ndarray, ingredient_map: Optional[Dict[str, Any]]
 
 # ---- Streamlit App ----
 
+def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+    try:
+        if hex_color.startswith("#"):
+            hex_color = hex_color[1:]
+        if len(hex_color) == 3:
+            hex_color = "".join([c * 2 for c in hex_color])
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return r, g, b
+    except Exception:
+        return 255, 0, 255  # magenta fallback
+
+
+def _draw_marker(
+    img: np.ndarray,
+    x: int,
+    y: int,
+    color: Tuple[int, int, int] = (255, 0, 255),
+    size: int = 7,
+    thickness: int = 2,
+    crosshair: bool = True,
+) -> np.ndarray:
+    """Overlay a crosshair marker on the given HxWx3 uint8 image and return a copy."""
+    out = img.copy()
+    if out.ndim != 3 or out.shape[2] != 3:
+        return out
+    h, w, _ = out.shape
+    x = max(0, min(w - 1, int(x)))
+    y = max(0, min(h - 1, int(y)))
+    size = max(1, int(size))
+    thickness = max(1, int(thickness))
+
+    # Horizontal line
+    x1 = max(0, x - size)
+    x2 = min(w - 1, x + size)
+    y1 = max(0, y - (thickness // 2))
+    y2 = min(h - 1, y + (thickness - 1) // 2)
+    out[y1 : y2 + 1, x1 : x2 + 1, 0] = color[0]
+    out[y1 : y2 + 1, x1 : x2 + 1, 1] = color[1]
+    out[y1 : y2 + 1, x1 : x2 + 1, 2] = color[2]
+
+    # Vertical line
+    y1v = max(0, y - size)
+    y2v = min(h - 1, y + size)
+    x1v = max(0, x - (thickness // 2))
+    x2v = min(w - 1, x + (thickness - 1) // 2)
+    out[y1v : y2v + 1, x1v : x2v + 1, 0] = color[0]
+    out[y1v : y2v + 1, x1v : x2v + 1, 1] = color[1]
+    out[y1v : y2v + 1, x1v : x2v + 1, 2] = color[2]
+
+    return out
+
 def main(argv: Optional[List[str]] = None) -> None:  # pragma: no cover
     if st is None:
         raise RuntimeError("streamlit is required to run this app")
@@ -331,11 +384,21 @@ def main(argv: Optional[List[str]] = None) -> None:  # pragma: no cover
     x = st.sidebar.slider("x", min_value=0, max_value=W - 1, value=W // 2, step=1)
     y = st.sidebar.slider("y", min_value=0, max_value=H - 1, value=H // 2, step=1)
 
+    # Marker options
+    st.sidebar.header("Marker")
+    show_marker = st.sidebar.checkbox("Show marker on image", value=True)
+    marker_size = st.sidebar.slider("Marker size (px)", min_value=3, max_value=21, value=9, step=1)
+    marker_color_hex = st.sidebar.color_picker("Marker color", value="#ff00ff")
+    marker_color = _hex_to_rgb(marker_color_hex)
+
     # Layout: image and profile
     col1, col2 = st.columns([2, 1])
     with col1:
         st.subheader("Visualization")
-        st.image(vis_img, caption=f"Sample {int(sample_index)} ({mode})", use_container_width=True)
+        disp_img = vis_img
+        if show_marker:
+            disp_img = _draw_marker(disp_img, int(x), int(y), color=marker_color, size=int(marker_size), thickness=2)
+        st.image(disp_img, caption=f"Sample {int(sample_index)} ({mode})", use_container_width=True)
     with col2:
         st.subheader("Spectral profile")
         spec = hsi[:, int(y), int(x)]  # (B,)
