@@ -1,6 +1,6 @@
 ## hsifoodingr-toolkit
 
-HSIFoodIngr の HDF5（例: `HSIFoodIngr-64.h5`）を安全・効率的に扱うためのツールキットです。下記のリポジトリが出力する HDF5 仕様を前提とします。
+HSIFoodIngr-64[^1] の HDF5（例: `HSIFoodIngr-64.h5`）を安全・効率的に扱うためのツールキットです。下記のリポジトリが出力する HDF5 仕様を前提とします。
 
 - 参照: [HSIFoodIngr-Compression](https://github.com/keitao7gawa/HSIFoodIngr-Compression)
 
@@ -102,6 +102,29 @@ streamlit run hsifoodingr/tools/view_hsi.py -- --h5 path/to/HSIFoodIngr-64.h5
 
 ---
 
+### 操作ガイド（GUI）
+1. サイドバーの「Data Source」で `--h5` に HDF5 のパスを入力
+2. 「Display」で表示モード・マスク重畳・アルファ値を調整
+   - Mode: RGB / HSI band / Pseudocolor（擬似カラー）
+   - HSI band の場合：Band index スライダーで表示バンドを選択
+3. 「Spectral profile」で座標 `(x, y)` を指定（画像上のマーカー位置と一致）
+4. 「Marker」で画像上のマーカー（クロスヘア）の ON/OFF、サイズ、色を設定
+5. 右ペインに分光プロファイルが表示されます（波長があれば nm 軸、なければバンド番号）
+6. Legend は画像内に存在する `id` のみを表示（色見本＋16進カラー）
+7. Export の Download PNG で現在の表示を保存
+
+---
+
+### スクリーンショット
+
+1) GUI 全体レイアウト
+![GUI overview](docs/images/gui-overview.png)
+
+2) マーカー＋スペクトルの例
+![Marker and spectral profile](docs/images/marker-spectral.png)
+
+---
+
 ## HDF5 の想定仕様（抜粋）
 - `/hsi`: `float32 (N,H,W,B)` 例 `(N,512,512,204)`
 - `/rgb`: `uint8 (N,512,512,3)`
@@ -128,3 +151,6 @@ streamlit run hsifoodingr/tools/view_hsi.py -- --h5 path/to/HSIFoodIngr-64.h5
 - Lint/型: `ruff`, `mypy`
 
 PR/課題管理は通常の GitHub フローを想定しています。
+
+
+[^1]: X. Xia, W. Liu, L. Wang and J. Sun, "HSIFoodIngr-64: A Dataset for Hyperspectral Food-Related Studies and a Benchmark Method on Food Ingredient Retrieval," in IEEE Access, vol. 11, pp. 13152-13162, 2023, doi: 10.1109/ACCESS.2023.3243243. 
