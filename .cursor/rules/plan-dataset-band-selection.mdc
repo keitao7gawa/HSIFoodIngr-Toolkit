@@ -1,0 +1,93 @@
+---
+alwaysApply: false
+---
+
+## 目的
+- `hsifoodingr/datasets/hsi_food_ingr.py` の `HSIFoodIngrDataset` に「特定バンドのみを選択して返す」機能を追加する。
+- 目的は I/O とメモリの削減、特定バンドのみを使う実験の容易化。
+
+---
+
+## スコープ
+- HSI のバンド選択（インデックス指定または波長指定）のみ。
+- 返却テンソルの形状は選択後のバンド数に応じて `(B_sel, H, W)`。
+
+非スコープ（今はやらない）
+- 任意の線形結合や PCA 等の次元圧縮。
+- 複数バンドの重み付き擬似カラー（GUI 側で対応）。
+
+---
+
+## API 拡張（引数）
+- `band_indices: Optional[Sequence[int]] = None`
+  - 例: `[10, 25, 50]` のようにバンド番号（0 始まり）を直接指定。
+- `wavelengths_nm: Optional[Sequence[float]] = None`
+  - 例: `[450.0, 550.0, 650.0]` のように波長（nm）を指定。
+  - 内部で `/metadata/wavelengths`（`float32 (B,)`）に対して最近傍のインデックスへ変換。
+- 優先順位: 両方指定された場合は `band_indices` を優先。
+
+後方互換性: 既存コードは両引数を省略すれば従来通り「全バンド」を返す。
+
+---
+
+## 仕様（動作）
+1) 初期化時
+- `__init__` で受け取った `band_indices` / `wavelengths_nm` を元に、`self.selected_band_indices: np.ndarray[int]` を確定する。
+- `wavelengths_nm` 指定時は、HDF5 の `/metadata/wavelengths` を読み出し最近傍探索でインデックス化。
+  - 例: 550.0nm → `argmin(|wavelengths - 550.0|)`
+  - `/metadata/wavelengths` が無い場合はエラー（`strict=True` のとき）。`strict=False` では無視して全バンドにフォールバック可。
+- バリデーション
+  - 重複は許可するが、I/O 最適化のため内部で一度ユニーク＋ソートして読み出し、返却時に元の順序へ並べ替え。
+  - 範囲外（<0 または >= B）、空シーケンスはエラー。
+
+2) データ取得時
+- `__getitem__` で `hsi_np`（形 `(H,W,B)`）から選択バンドのみを抽出し `(H,W,B_sel)` にし、`(B_sel,H,W)` へチャンネル先頭化して返却。
+- 選択なし（`None`）の場合は従来通り `(B,H,W)`。
+
+---
+
+## 実装要点
+- 属性: `self.selected_band_indices: Optional[np.ndarray]`
+- 変換ヘルパ: `def _nearest_wavelength_indices(wavelengths: np.ndarray, targets_nm: Sequence[float]) -> np.ndarray`
+- I/O 最適化（h5py）
+  - `selected` を昇順ユニーク化してスライスする（チャンクの無駄読みを抑制）。
+  - 読み出し後に必要ならリオーダーで元順序へ整列。
+- 返却テンソルは `torch.float32`（HSI）を維持。選択数 1 の場合も `(1,H,W)` を維持（次元圧縮はしない）。
+
+---
+
+## エラー/例外（代表例）
+- `band_indices` に非整数、負数、範囲外が含まれる → `ValueError`
+- `wavelengths_nm` 指定で `/metadata/wavelengths` が無い → `ValueError`（`strict=True`）
+- `band_indices` と `wavelengths_nm` の両方が空/None ではないが結果が空 → `ValueError`
+
+---
+
+## 使用例
+```python
+from hsifoodingr.datasets import HSIFoodIngrDataset
+
+# 例1: バンド番号で選択（10, 25, 50）
+ds_idx = HSIFoodIngrDataset("HSIFoodIngr-64.h5", band_indices=[10, 25, 50])
+sample = ds_idx[0]
+assert sample["hsi"].shape[0] == 3  # B_sel=3
+
+# 例2: 波長（nm）で選択（近傍バンドにマップ）
+ds_nm = HSIFoodIngrDataset("HSIFoodIngr-64.h5", wavelengths_nm=[450.0, 550.0, 650.0])
+sample = ds_nm[0]
+assert sample["hsi"].shape[0] == 3
+```
+
+---
+
+## テスト観点
+- `band_indices` と `wavelengths_nm` の両ケースで、選択数・順序・形状 `(B_sel,H,W)` が期待通り。
+- 範囲外/空/非整数/`/metadata/wavelengths` 無し等で適切な例外。
+- I/O 最適化: 重複や順序のある指定でも内容が正しく再現される。
+
+---
+
+## 受け入れ基準（DoD）
+- バンド選択を有効化した Dataset が既存の前処理（正規化、チャネル順変換、transform）と矛盾なく動作する。
+- 単体/統合テストが合格し、選択 0/1/複数の全ケースで期待形状を返す。
+- 既存コード（引数未指定）が後方互換でそのまま使用できる。
