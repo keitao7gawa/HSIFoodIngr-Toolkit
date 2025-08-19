@@ -335,7 +335,7 @@ def main(argv: Optional[List[str]] = None) -> None:  # pragma: no cover
     col1, col2 = st.columns([2, 1])
     with col1:
         st.subheader("Visualization")
-        st.image(vis_img, caption=f"Sample {int(sample_index)} ({mode})", use_column_width=True)
+        st.image(vis_img, caption=f"Sample {int(sample_index)} ({mode})", use_container_width=True)
     with col2:
         st.subheader("Spectral profile")
         spec = hsi[:, int(y), int(x)]  # (B,)
